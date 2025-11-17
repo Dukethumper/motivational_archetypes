@@ -1,9 +1,10 @@
 # file: app.py
 from __future__ import annotations
 
-import json, math, re, hashlib, random
+import json, math, re, hashlib, random, os
 from dataclasses import dataclass
 from io import StringIO
+from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
 import numpy as np
@@ -94,7 +95,9 @@ _ARC_RAW = pd.DataFrame(
         "Conform","Control","Flow","Risk","Outward","Inward","Surrender","Relational",
     ],
 )
-ARCHETYPE_CENTROIDS = normalize_centroid_headers(_ARC_RAW)
+def _norm_headers(df: pd.DataFrame) -> pd.DataFrame:
+    return normalize_centroid_headers(df)
+ARCHETYPE_CENTROIDS = _norm_headers(_ARC_RAW)
 
 # ====================== Scoring engine ======================
 
@@ -254,10 +257,6 @@ def aggregate_to_scales(responses: Dict[str,int], spec: Dict) -> Dict[str,float]
         means[d] = float(np.mean(vals)) if len(vals) > 0 else np.nan
     return means
 
-@dataclass
-class ZParamsFit:  # thin alias to keep type hints clear
-    pass
-
 def zparams_from_norms_or_single(person_scales: Dict[str,float], norms_df: Optional[pd.DataFrame]) -> ZParams:
     if norms_df is not None:
         missing = [c for c in ALL_REQ_FOR_Z if c not in norms_df.columns]
@@ -281,6 +280,16 @@ def to_result_df(res: Dict, pid: str) -> pd.DataFrame:
            **res["domain_centroids"], **res["probs"]}
     return pd.DataFrame([row])
 
+# ====================== Load questions from repo or override ======================
+
+def load_questions_from_repo() -> Dict:
+    """Reads questions from local repo file. Path from env QUESTIONS_PATH or './questions.txt'."""
+    q_path = Path(os.getenv("QUESTIONS_PATH", "questions.txt"))
+    if not q_path.exists():
+        raise FileNotFoundError(f"questions file not found at: {q_path.resolve()}")
+    text = q_path.read_text(encoding="utf-8")
+    return parse_txt_questions(text)
+
 # ====================== UI ======================
 
 st.set_page_config(page_title="Motivational Archetypes – Test", page_icon="🧭", layout="wide")
@@ -288,19 +297,17 @@ st.title("🧭 Motivational Archetypes – Test")
 
 with st.sidebar:
     st.header("Inputs")
-    q_up = st.file_uploader("Upload questions.txt", type=["txt"], help="Headers (hidden) + items with [LABELS=…] or [L=…][R=…].")
+    st.caption("By default the app reads **questions.txt** from the repo. You can override it below.")
+    q_up = st.file_uploader("Override questions.txt (optional)", type=["txt"])
     norms_up = st.file_uploader("Optional norms.csv", type=["csv"])
     participant_id = st.text_input("Participant ID", value="P001")
     st.caption("Two-column layout. Labels above sliders update live as you move them.")
 
-if q_up is None:
-    st.info("Upload your questions.txt to begin.")
-    st.stop()
-
+# Load spec (repo first; uploader overrides if provided)
 try:
-    spec = parse_txt_questions(q_up.read().decode("utf-8"))
+    spec = parse_txt_questions(q_up.read().decode("utf-8")) if q_up is not None else load_questions_from_repo()
 except Exception as e:
-    st.error(f"Failed to parse questions.txt: {e}")
+    st.error(f"Failed to load/parse questions: {e}")
     st.stop()
 
 items: List[Dict] = list(spec.get("questions", []))
@@ -308,7 +315,7 @@ if not items:
     st.error("No items parsed. Check your headers (e.g., 'Sattva:') and item lines.")
     st.stop()
 
-# Stable per-user shuffle (no categories shown)
+# Stable per-user shuffle
 def stable_shuffle(items: List[Dict], pid: str, spec_obj: Dict) -> List[Dict]:
     spec_bytes = json.dumps(spec_obj, sort_keys=True).encode("utf-8")
     seed_hex = hashlib.sha256((pid + "|").encode("utf-8") + spec_bytes).hexdigest()[:16]
@@ -355,19 +362,23 @@ for it in shuffled:
     step = int(it.get("step", scale_defaults.get("step", 1)))
     default_val = vmin + ((vmax - vmin) // (2 * step)) * step
 
-    c1, c2 = st.columns([2, 3])  # left: question text; right: dynamic label + slider
+    c1, c2 = st.columns([2, 3])
     with c1:
         st.markdown(f"**{it['text']}**")
     with c2:
-        # current value (from state or default)
         current_val = st.session_state.get(it["id"], default_val)
         curr_label = value_to_label(it, current_val)
         if curr_label:
-            st.markdown(f"<div style='font-size:0.9rem; opacity:0.8; margin-bottom:-0.5rem'><b>{curr_label}</b></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='font-size:0.9rem; opacity:0.8; margin-bottom:-0.5rem'><b>{curr_label}</b></div>",
+                unsafe_allow_html=True,
+            )
         elif it.get("L") or it.get("R"):
-            st.markdown(f"<div style='font-size:0.9rem; opacity:0.7; margin-bottom:-0.5rem'><b>{it.get('L','')}</b></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='font-size:0.9rem; opacity:0.7; margin-bottom:-0.5rem'><b>{it.get('L','')}</b></div>",
+                unsafe_allow_html=True,
+            )
 
-        # Slider: moving it triggers a rerun → label above updates automatically
         val = st.slider(
             label="", min_value=vmin, max_value=vmax, step=step,
             value=current_val, key=it["id"],
@@ -377,9 +388,7 @@ for it in shuffled:
     st.divider()
     responses[it["id"]] = val
 
-# Compute button (separate from sliders so labels update live on move)
 compute = st.button("Compute Results")
-
 if not compute:
     st.stop()
 
