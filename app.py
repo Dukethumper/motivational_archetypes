@@ -171,53 +171,62 @@ def quadrant_label_from_pair(a: str, b: str) -> str:
     if "Flow"    in pair and "Risk"    in pair: return "Flow–Risk"
     return "Ambiguous"
 
-def compute_confidence_from_means(si: float, ssb: float) -> Tuple[float, str]:
-    # Mapping from score to confidence value
-    CENTROID_MAP = {
-        1: 0.00,
-        2: 0.17,
-        3: 0.33,
-        4: 0.50,
-        5: 0.67,
-        6: 0.83,
-        7: 1.00
-    }
+def strategy_subtype_mixture(str_means: dict[str, float], tol: float = 0.05) -> tuple[str, str, dict]:
+    """
+    Pick top-2 by raw mean, build a % mixture label, and derive quadrant from the pair.
+    If top-2 are within tol -> 'balanced'; otherwise leaning/dominant by gap.
+    Returns: (quadrant_label, subtype_label, debug_payload)
+    """
+    # sort by value desc, name asc for deterministic ties
+    ordered = sorted(str_means.items(), key=lambda kv: (-kv[1], kv[0]))
+    (s1, v1), (s2, v2) = ordered[0], ordered[1]
 
-    # Clamp SI and SSB into 1–7 range and round
-    si = max(1, min(7, round(si)))
-    ssb = max(1, min(7, round(ssb)))
+    # mixture %
+    p1, p2 = _mix_perc(v1, v2)
+    # dominance
+    gap = abs(v1 - v2)
+    dom = "balanced" if gap < 0.2 else (f"{s1}-leaning" if gap < 0.6 else f"{s1}-dominant")
 
-    c1 = CENTROID_MAP.get(si, 0.0)
-    c2 = CENTROID_MAP.get(ssb, 0.0)
-    C = (c1 + c2) / 2.0
+    # ensure cross-axes for quadrant readability:
+    # if both winners sit on same axis, replace the lower one with the axis-opposing next best.
+    axis_h, axis_v = {"Control", "Flow"}, {"Conform", "Risk"}
+    if (s1 in axis_h and s2 in axis_h) or (s1 in axis_v and s2 in axis_v):
+        # find next best from the other axis
+        other_axis = axis_v if s1 in axis_h else axis_h
+        third = next((k for k, _ in ordered[2:] if k in other_axis), None)
+        if third:
+            s2 = third  # keep s1 as top; swap s2 to cross-axis
+            # recompute mixture vs s2's value
+            v2 = str_means[s2]
+            p1, p2 = _mix_perc(v1, v2)
+            gap = abs(v1 - v2)
+            dom = "balanced" if gap < 0.2 else (f"{s1}-leaning" if gap < 0.6 else f"{s1}-dominant")
 
-    level = "High" if C >= 0.75 else ("Moderate" if C >= 0.4 else "Low")
+    quadrant = quadrant_label_from_pair(s1, s2)
+    subtype = f"{s1} {p1}% + {s2} {p2}% ({dom})"
+
+    debug = {"ordered": ordered, "chosen": {s1: v1, s2: v2}, "gap": gap, "percent": {s1: p1, s2: p2}}
+    return quadrant, subtype, debug
+
+def compute_confidence_from_means(si: float, ssb: float) -> tuple[float, str]:
+    """
+    Strict 0..1 from raw Likert means:
+      SI=1 & SSB=1 -> 0.0
+      SI=7 & SSB=7 -> 1.0
+      linear in-between; level bands: Low/Moderate/High
+    """
+    si_n  = (float(si)  - 1.0) / 6.0
+    ssb_n = (float(ssb) - 1.0) / 6.0
+    C = max(0.0, min(1.0, 0.5 * (si_n + ssb_n)))
+    level = "High" if C >= 2/3 else ("Moderate" if C >= 0.45 else "Low")
     return C, level
 
-
-def compute_confidence_from_means(si: float, ssb: float) -> Tuple[float, str]:
-    # Mapping from score to confidence value
-    CENTROID_MAP = {
-        1: 0.00,
-        2: 0.17,
-        3: 0.33,
-        4: 0.50,
-        5: 0.67,
-        6: 0.83,
-        7: 1.00
-    }
-
-    # Clamp SI and SSB into 1–7 range and round
-    si = max(1, min(7, round(si)))
-    ssb = max(1, min(7, round(ssb)))
-
-    c1 = CENTROID_MAP.get(si, 0.0)
-    c2 = CENTROID_MAP.get(ssb, 0.0)
-    C = (c1 + c2) / 2.0
-
-    level = "High" if C >= 0.75 else ("Moderate" if C >= 0.4 else "Low")
-    return C, level
-
+def _mix_perc(a: float, b: float) -> tuple[int, int]:
+    """Return integer percentages summing to 100."""
+    s = max(1e-9, a + b)
+    pa = int(round(a / s * 100))
+    pb = 100 - pa
+    return pa, pb
 
 # ====================== Parser & aggregation ======================
 ITEM_KV_RE = re.compile(r"\[(\w+)\s*=\s*(.*?)\]")  # [KEY=VALUE]
