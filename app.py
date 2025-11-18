@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# PDF (ReportLab) – optional
+# PDF (ReportLab) optional; don't fail app if missing
 try:
     from reportlab.lib.pagesizes import LETTER
     from reportlab.lib import colors
@@ -21,7 +21,7 @@ try:
 except Exception:
     HAS_REPORTLAB = False
 
-# ====================== Canonical dimensions ======================
+# ====================== Canonical Dimensions ======================
 MOTIVATIONS: List[str] = [
     "Sattva", "Rajas", "Tamas",
     "Prajna", "Personal_Unconscious", "Collective_Unconscious",
@@ -42,8 +42,9 @@ DEFAULT_DOMAIN_MAP = {
     "Relational": ["Relational_Balance","Thymos","Eros"],
 }
 
-# ====================== Header normalization ======================
+# ====================== Header Normalization ======================
 HEADER_TO_CANON = {
+    # motivations
     "sattva":"Sattva","rajas":"Rajas","tamas":"Tamas",
     "prajna":"Prajna","prajna logos":"Prajna","prajna-logos":"Prajna",
     "personal unconscious":"Personal_Unconscious","personal_unconscious":"Personal_Unconscious","pers.u":"Personal_Unconscious","pers u":"Personal_Unconscious",
@@ -51,9 +52,12 @@ HEADER_TO_CANON = {
     "cheng":"Cheng","wu wei":"Wu_Wei","wu_wei":"Wu_Wei","anatta":"Anatta",
     "relational balance":"Relational_Balance","relational_balance":"Relational_Balance","rel.bal":"Relational_Balance","rel bal":"Relational_Balance",
     "thymos":"Thymos","eros":"Eros",
+    # strategies
     "conform":"Conform","control":"Control","flow":"Flow","risk":"Risk",
+    # orientations
     "cognitive":"Cognitive","energy":"Energy","relational":"Relational","relationship":"Relational","relationship value":"Relational","surrender":"Surrender",
     "inward":"Cognitive","outward":"Energy",
+    # self
     "self insight":"Self_Insight","self_insight":"Self_Insight","self-insight":"Self_Insight","self–insight":"Self_Insight",
     "self serving bias":"Self_Serving_Bias","self-serving bias":"Self_Serving_Bias","self_serving_bias":"Self_Serving_Bias",
 }
@@ -70,7 +74,7 @@ def canon(name: str) -> Optional[str]:
         if k in s and (best is None or len(k) > len(best[0])): best = (k, v)
     return best[1] if best else None
 
-# ====================== Centroids (embedded, adjusted peaks) ======================
+# ====================== Archetype Centroids (embedded) ======================
 COLUMN_NORMALIZATION = {
     "Sattva":"Sattva","Rajas":"Rajas","Tamas":"Tamas","Prajna":"Prajna",
     "Pers.U":"Personal_Unconscious","Personal Unconscious":"Personal_Unconscious","Personal_Unconscious":"Personal_Unconscious",
@@ -84,7 +88,8 @@ COLUMN_NORMALIZATION = {
 def normalize_centroid_headers(df: pd.DataFrame) -> pd.DataFrame:
     out = df.rename(columns={k:v for k,v in COLUMN_NORMALIZATION.items() if k in df.columns})
     missing = set(ALL_DIMS) - set(out.columns)
-    if missing: raise KeyError(f"Archetype centroids missing columns: {sorted(missing)}")
+    if missing:
+        raise KeyError(f"Archetype centroids missing columns: {sorted(missing)}")
     return out[ALL_DIMS].copy()
 
 _ARC_ROWS = [
@@ -115,6 +120,7 @@ _ARC_RAW = pd.DataFrame(
 )
 ARCHETYPE_CENTROIDS = normalize_centroid_headers(_ARC_RAW)
 
+# sanity check for requested peaks (non-fatal)
 def _check_orientation_peaks(centroids: pd.DataFrame) -> None:
     expected_order = {
         "Energy":     ["Lucerna (Lantern)", "Tigre (Tiger)", "Arachna (Spider)"],
@@ -128,12 +134,12 @@ def _check_orientation_peaks(centroids: pd.DataFrame) -> None:
         want_set, top_set = set(want), set(top3)
         missing = list(want_set - top_set); extra = list(top_set - want_set)
         if missing or extra or top3 != want:
-            problems.append(f"**{col}** expected {want} | actual {top3} | missing {missing} | extra {extra}")
+            problems.append(f"{col}: expected {want} | got {top3} | missing {missing} | extra {extra}")
     if problems:
-        st.warning("Centroid orientation sanity check failed:\n\n- " + "\n- ".join(problems))
+        st.warning("Centroid orientation sanity check:\n- " + "\n- ".join(problems))
 _check_orientation_peaks(ARCHETYPE_CENTROIDS)
 
-# ====================== Scoring engine ======================
+# ====================== Scoring Engine ======================
 EPS = 1e-8
 W_MOT_ABS, W_STRAT_MATCH, W_ORIENT_MATCH = 0.60, 0.20, 0.20
 
@@ -179,54 +185,30 @@ def quadrant_label_from_pair(a: str, b: str) -> str:
     if "Flow"    in pair and "Risk"    in pair: return "Flow–Risk"
     return "Mixed"
 
-# ----- PATCH: dominance-aware top-two pairing -----
+# --- Dominance-aware top-two pairing (why: ensures cross-axis & reveals dominance gap) ---
 def choose_pair_from_top2(str_vals: Dict[str, float]) -> Tuple[str, str, str]:
-    """
-    Returns (sA, sB, dominance_label).
-    Ensures one from each axis when initial top-2 are on the same axis.
-    Dominance label reflects the gap magnitude between sA and sB.
-    """
     sorted_str = sorted(str_vals.items(), key=lambda kv: (-kv[1], kv[0]))
     s1, v1 = sorted_str[0]
     s2, v2 = sorted_str[1]
-
-    axis_h = {"Control", "Flow"}     # horizontal axis
-    axis_v = {"Conform", "Risk"}     # vertical axis
-
-    # Ensure cross-axis pairing
+    axis_h = {"Control", "Flow"}     # horizontal
+    axis_v = {"Conform", "Risk"}     # vertical
     if (s1 in axis_h and s2 in axis_v) or (s1 in axis_v and s2 in axis_h):
         sA, vA, sB, vB = (s1, v1, s2, v2)
     elif s1 in axis_h and s2 in axis_h:
-        sB = max(axis_v, key=lambda k: str_vals.get(k, -np.inf))
-        vB = str_vals.get(sB, -np.inf)
-        sA, vA = s1, v1
-    else:  # both in vertical
-        sB = max(axis_h, key=lambda k: str_vals.get(k, -np.inf))
-        vB = str_vals.get(sB, -np.inf)
-        sA, vA = s1, v1
-
-    # Ensure sA is the higher of the pair
-    if vB > vA:
-        sA, sB = sB, sA
-        vA, vB = vB, vA
-
-    # Dominance label based on gap
-    delta = abs(vA - vB)
-    if delta < 0.2:
-        dom = "balanced"
-    elif delta < 0.6:
-        dom = f"{sA}-leaning"
+        sB = max(axis_v, key=lambda k: str_vals.get(k, -np.inf)); vB = str_vals.get(sB, -np.inf); sA, vA = s1, v1
     else:
-        dom = f"{sA}-dominant"
-
+        sB = max(axis_h, key=lambda k: str_vals.get(k, -np.inf)); vB = str_vals.get(sB, -np.inf); sA, vA = s1, v1
+    if vB > vA:
+        sA, sB, vA, vB = sB, sA, vB, vA
+    delta = abs(vA - vB)
+    dom = "balanced" if delta < 0.2 else (f"{sA}-leaning" if delta < 0.6 else f"{sA}-dominant")
     return sA, sB, dom
 
 def domain_means(row: pd.Series) -> Dict[str,float]:
     return {d: float(np.nanmean([row[k] for k in ks])) for d, ks in DEFAULT_DOMAIN_MAP.items()}
 
-def compute_confidence(person: pd.Series) -> Tuple[float, str]:
-    # strict 0–1 mapping: (SI,SSB) all 1 -> 0 ; all 7 -> 1
-    si = float(person["Self_Insight"]); ssb = float(person["Self_Serving_Bias"])
+def compute_confidence_from_means(si: float, ssb: float) -> Tuple[float, str]:
+    # why: strict 0..1 mapping independent of norms; (1,1)->0 ; (7,7)->1
     si_n = (si  - 1.0) / 6.0
     ssb_n = (ssb - 1.0) / 6.0
     C = max(0.0, min(1.0, 0.5*(si_n + ssb_n)))
@@ -239,19 +221,20 @@ def score_single(
     arch: pd.DataFrame,
     arch_mz: pd.DataFrame,
     arch_std: pd.DataFrame,
+    si_mean: float,
+    ssb_mean: float,
+    strategy_means: Dict[str, float],
 ) -> Dict:
-    # Z features for similarity math
+    # z features for similarity math
     z_mot = z.zrow(person, MOTIVATIONS)
     z_str = z.zrow(person, STRATEGIES)
     z_ori = z.zrow(person, ORIENTATIONS)
-
-    # Motivation pattern (within-person)
     z_pat = intra_person_z(np.array([person[m] for m in MOTIVATIONS], float))
 
-    # Confidence from raw SI/SSB strict 0–1
-    C, C_level = compute_confidence(person)
+    # confidence from direct raw SI/SSB
+    C, C_level = compute_confidence_from_means(si_mean, ssb_mean)
 
-    # Similarity loop
+    # similarity loop
     names = list(arch.index); vals=[]
     for name in names:
         ap = arch_mz.loc[name, MOTIVATIONS].to_numpy(float)
@@ -273,13 +256,12 @@ def score_single(
     probs = normalize_probs(np.array(vals,float))
     order = np.argsort(-probs); top3=[(names[i], float(probs[i])) for i in order[:3]]
 
-    # Quadrant & subtype from top two strategy MEANS (raw) + dominance label
-    str_vals = {s: float(person[s]) for s in STRATEGIES}
-    sA, sB, dom = choose_pair_from_top2(str_vals)
+    # quadrant & subtype from direct strategy means
+    sA, sB, dom = choose_pair_from_top2(strategy_means)
     quadrant = quadrant_label_from_pair(sA, sB)
     subtype = f"{sA} + {sB} ({dom})"
 
-    # Axes for numeric reference (within-person z on strategies)
+    # axes (reference)
     raw_str = np.array([person[s] for s in STRATEGIES], float)
     z_str_personal = intra_person_z(raw_str)
     axes = {
@@ -298,7 +280,7 @@ def score_single(
         "domain_centroids": domain_means(person),
     }
 
-# ====================== TXT parser ======================
+# ====================== TXT Parser ======================
 ITEM_KV_RE = re.compile(r"\[(\w+)\s*=\s*(.*?)\]")  # [KEY=VALUE]
 def _kv_blocks(s: str) -> Dict[str,str]:
     return {k.upper(): v.strip() for k, v in ITEM_KV_RE.findall(s)}
@@ -309,7 +291,6 @@ def parse_txt_questions(raw: str) -> Dict:
     spec = {"scale": {"min":1, "max":7, "step":1}, "questions":[], "parse_report": {"unknown_headers":[], "items_without_dim":[]}}
     cur_dim: Optional[str] = None
     counts: Dict[str,int] = {}
-
     for idx, line in enumerate(lines, start=1):
         s = line.strip()
         if not s: continue
@@ -322,33 +303,28 @@ def parse_txt_questions(raw: str) -> Dict:
             else:
                 cur_dim = maybe
             continue
-
         text = s
         kvs = _kv_blocks(s)
         if kvs: text = ITEM_KV_RE.sub("", s).strip()
-
         dim = canon(kvs.get("DIM", cur_dim or ""))
         if dim is None:
             spec["parse_report"]["items_without_dim"].append({"line": idx, "text": line})
             continue
-
         vmin = int(kvs.get("MIN", "1")); vmax = int(kvs.get("MAX", "7")); vstep = int(kvs.get("STEP", "1"))
         if vmax <= vmin or vstep <= 0:
             raise ValueError(f"Bad range for '{text}' on line {idx}: MIN={vmin} MAX={vmax} STEP={vstep}")
-        npoints = (vmax - vmin) // vstep + 1
-
+        npoints = (vmax - vmin)//vstep + 1
         labels: Optional[List[str]] = None
         if "LABELS" in kvs:
             labels = [p.strip() for p in kvs["LABELS"].split("|")]
             if len(labels) != npoints:
                 raise ValueError(f"LABELS count ({len(labels)}) must equal number of points ({npoints}) for '{text}' (line {idx})")
         else:
-            L = kvs.get("L"); R = kvs.get("R")
+            L, R = kvs.get("L"), kvs.get("R")
             if L and R and npoints == 7:
                 labels = [L, "Slightly "+L, "Somewhat "+L, "Neutral", "Somewhat "+R, "Slightly "+R, R]
             elif L and R and npoints == 5:
                 labels = [L, "Somewhat "+L, "Neutral", "Somewhat "+R, R]
-
         counts[dim] = counts.get(dim, 0) + 1
         qid = f"q_{dim}_{counts[dim]}"
         spec["questions"].append({
@@ -358,7 +334,7 @@ def parse_txt_questions(raw: str) -> Dict:
         })
     return spec
 
-# ====================== Aggregation & z-params ======================
+# ====================== Aggregation & Z-params ======================
 def aggregate_to_scales(responses: Dict[str,int], spec: Dict) -> Dict[str,float]:
     buckets: Dict[str, List[float]] = {d: [] for d in (ALL_DIMS + SELF_SCALES)}
     for q in spec["questions"]:
@@ -402,7 +378,28 @@ def top3_percentages(top3: List[Tuple[str,float]]) -> List[Tuple[str,int]]:
     a = int(round(raw[0])); b = int(round(raw[1])); c = 100 - a - b
     return [(top3[0][0], a), (top3[1][0], b), (top3[2][0], c)]
 
-# ====================== Questions loader ======================
+# ====================== Extra Helpers: Coverage & Direct Means ======================
+REQ_STRATEGY_DIMS = ["Conform","Control","Flow","Risk"]
+REQ_SELF_DIMS = ["Self_Insight","Self_Serving_Bias"]
+
+def count_items_by_dim(spec: dict) -> dict:
+    counts = {}
+    for q in spec.get("questions", []):
+        d = q.get("dimension")
+        counts[d] = counts.get(d, 0) + 1
+    return counts
+
+def direct_mean_for_dim(responses: dict, spec: dict, dimension: str) -> float:
+    vals = [responses[q["id"]] for q in spec["questions"] if q["dimension"] == dimension and q["id"] in responses]
+    return float(np.mean(vals)) if vals else float("nan")
+
+def direct_strategy_means(responses: dict, spec: dict) -> dict:
+    return {d: direct_mean_for_dim(responses, spec, d) for d in REQ_STRATEGY_DIMS}
+
+def direct_self_means(responses: dict, spec: dict) -> dict:
+    return {d: direct_mean_for_dim(responses, spec, d) for d in REQ_SELF_DIMS}
+
+# ====================== Questions Loader ======================
 def load_questions_from_repo() -> Dict:
     q_path = Path(os.getenv("QUESTIONS_PATH", "questions.txt"))
     if not q_path.exists():
@@ -421,7 +418,7 @@ with st.sidebar:
     norms_up = st.file_uploader("Optional norms.csv", type=["csv"])
     participant_id = st.text_input("Participant ID", value="P001")
     ranking_mode = st.selectbox("Motivation ranking metric", ["Raw means (1–7)", "Z-scores (vs norms)"])
-    st.caption("Two-column layout. Labels update live. Order is randomized per participant.")
+    st.caption("Order is randomized per participant. Labels update as you slide.")
 
 # Load spec
 try:
@@ -432,13 +429,14 @@ except Exception as e:
 
 rep = spec.get("parse_report", {})
 if rep.get("unknown_headers") or rep.get("items_without_dim"):
-    with st.expander("Parsing report (click to review)"):
+    with st.expander("Parsing report"):
         if rep.get("unknown_headers"): st.json(rep["unknown_headers"])
         if rep.get("items_without_dim"): st.json(rep["items_without_dim"])
 
 items: List[Dict] = list(spec.get("questions", []))
 if not items:
-    st.error("No items parsed. Check your headers and items."); st.stop()
+    st.error("No items parsed. Check your headers and items.")
+    st.stop()
 
 # Stable per-user shuffle
 def stable_shuffle(items: List[Dict], pid: str, spec_obj: Dict) -> List[Dict]:
@@ -454,13 +452,12 @@ if "shuffle_meta" not in st.session_state or st.session_state.shuffle_meta != (p
     st.session_state.shuffled_items = stable_shuffle(items, participant_id, spec)
 shuffled = st.session_state.shuffled_items
 
-# Live label mapping
+# Value→label mapping
 def value_to_label(item: Dict, val: int) -> str:
     vmin = int(item.get("min", 1)); vmax = int(item.get("max", 7)); step = int(item.get("step", 1))
     labels = item.get("labels"); idx = (val - vmin) // step
     if labels and 0 <= idx < len(labels): return labels[idx]
-    L, R = item.get("L"), item.get("R")
-    npoints = (vmax - vmin)//step + 1
+    L, R = item.get("L"), item.get("R"); npoints = (vmax - vmin)//step + 1
     if L and R and npoints == 7:
         return [L, f"Slightly {L}", f"Somewhat {L}", "Neutral", f"Somewhat {R}", f"Slightly {R}", R][idx]
     if L and R and npoints == 5:
@@ -470,33 +467,50 @@ def value_to_label(item: Dict, val: int) -> str:
 # Render questionnaire
 responses: Dict[str,int] = {}
 scale_defaults = spec.get("scale", {"min":1,"max":7,"step":1})
-
 st.subheader("📝 Questionnaire")
 for it in shuffled:
     vmin = int(it.get("min", scale_defaults.get("min", 1)))
     vmax = int(it.get("max", scale_defaults.get("max", 7)))
     step = int(it.get("step", scale_defaults.get("step", 1)))
     default_val = vmin + ((vmax - vmin) // (2 * step)) * step
-
     c1, c2 = st.columns([2, 3])
-    with c1: st.markdown(f"**{it['text']}**")
+    with c1:
+        st.markdown(f"**{it['text']}**")
     with c2:
         current_val = st.session_state.get(it["id"], default_val)
         curr_label = value_to_label(it, current_val)
         if curr_label:
-            st.markdown(f"<div style='font-size:0.9rem; opacity:0.8; margin-bottom:-0.5rem'><b>{curr_label}</b></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:0.9rem;opacity:.8;margin-bottom:-0.5rem'><b>{curr_label}</b></div>", unsafe_allow_html=True)
         elif it.get("L") or it.get("R"):
-            st.markdown(f"<div style='font-size:0.9rem; opacity:0.7; margin-bottom:-0.5rem'><b>{it.get('L','')}</b></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:0.9rem;opacity:.7;margin-bottom:-0.5rem'><b>{it.get('L','')}</b></div>", unsafe_allow_html=True)
         val = st.slider(label="", min_value=vmin, max_value=vmax, step=step,
                         value=current_val, key=it["id"],
-                        help=None if not (it.get("L") or it.get("R")) else f"{it.get('L','')}  ↔  {it.get('R','')}")
+                        help=None if not (it.get("L") or it.get("R")) else f"{it.get('L','')} ↔ {it.get('R','')}")
     st.divider()
     responses[it["id"]] = val
 
 compute = st.button("Compute Results")
-if not compute: st.stop()
+if not compute:
+    st.stop()
 
-# ====================== Validation + auto-derive orientations ======================
+# ====================== Diagnostics (live) ======================
+coverage = count_items_by_dim(spec)
+si_ssb_means = direct_self_means(responses, spec)
+str_means = direct_strategy_means(responses, spec)
+missing_self = [d for d in REQ_SELF_DIMS if coverage.get(d, 0) == 0]
+missing_str  = [d for d in REQ_STRATEGY_DIMS if coverage.get(d, 0) == 0]
+
+with st.expander("🛠 Diagnostics (click to open)"):
+    st.write("**Item coverage by dimension**:")
+    st.json({k:int(v) for k,v in sorted(coverage.items())})
+    st.write("**Direct means (raw 1–7)**:")
+    st.json({"Self": si_ssb_means, "Strategies": str_means})
+
+if missing_self or missing_str:
+    st.error(f"Missing required items. Add at least one item for: {missing_self + missing_str}")
+    st.stop()
+
+# ====================== Validate, derive orientations, norms ======================
 REQ_DIMS = MOTIVATIONS + STRATEGIES + ["Cognitive", "Energy", "Relational", "Surrender"] + SELF_SCALES
 LEGACY_TO_CANON = {"Inward": "Cognitive", "Outward": "Energy", "Relationship": "Relational", "Relational": "Relational"}
 
@@ -509,7 +523,6 @@ for k in list(person_scales.keys()):
             person_scales[c] = person_scales[k]
         person_scales.pop(k, None)
 
-# derive orientations if missing
 def derive_orientations(ps: Dict[str, float]) -> None:
     if np.isnan(ps.get("Energy", np.nan)):
         ps["Energy"] = float(np.nanmean([ps.get(m, np.nan) for m in DEFAULT_DOMAIN_MAP["Energy"]]))
@@ -523,39 +536,41 @@ derive_orientations(person_scales)
 
 missing = [d for d in REQ_DIMS if np.isnan(person_scales.get(d, np.nan))]
 if missing:
-    st.error(f"Missing responses for: {missing}"); st.stop()
+    st.error(f"Missing responses for: {missing}")
+    st.stop()
 
-# ====================== Norms (optional) ======================
 norms_df = None
 if norms_up is not None:
     try:
         norms_df = pd.read_csv(norms_up)
         ren = {"Inward": "Cognitive", "Outward": "Energy", "Relationship": "Relational", "Relational": "Relational"}
         have = [c for c in ren if c in norms_df.columns]
-        if have:
-            norms_df = norms_df.rename(columns={c: ren[c] for c in have})
+        if have: norms_df = norms_df.rename(columns={c: ren[c] for c in have})
     except Exception as e:
-        st.error(f"Failed to read norms.csv: {e}"); st.stop()
+        st.error(f"Failed to read norms.csv: {e}")
+        st.stop()
 
 # ====================== Score ======================
 try:
-    z = ZParams.fit(norms_df, list(ALL_REQ_FOR_Z)) if norms_df is not None else ZParams.fit(pd.DataFrame([person_scales])[ALL_REQ_FOR_Z], list(ALL_REQ_FOR_Z))
+    z = zparams_from_norms_or_single(person_scales, norms_df)
     arch_mz, arch_std = prepare_archetype_pieces(z)
     person_row = pd.Series({**person_scales, "participant_id": participant_id})
-    res = score_single(person_row, z, ARCHETYPE_CENTROIDS, arch_mz, arch_std)
+    si_mean  = si_ssb_means["Self_Insight"]
+    ssb_mean = si_ssb_means["Self_Serving_Bias"]
+    strategy_means = str_means
+    res = score_single(
+        person_row, z, ARCHETYPE_CENTROIDS, arch_mz, arch_std,
+        si_mean=si_mean, ssb_mean=ssb_mean, strategy_means=strategy_means
+    )
 except Exception as e:
-    st.error(str(e)); st.stop()
+    st.error(str(e))
+    st.stop()
 
-# ====================== Report & downloads ======================
+# ====================== Report & Downloads ======================
 left, right = st.columns([1,1])
 
 probs = pd.Series(res["probs"]).sort_values(ascending=False).rename("probability")
 (p1,p1v),(p2,p2v),(p3,p3v) = res["top3"]
-def top3_percentages(top3: List[Tuple[str,float]]) -> List[Tuple[str,int]]:
-    vals = [p for _, p in top3]; s = sum(vals) or 1.0
-    raw = [p / s * 100.0 for p in vals]
-    a = int(round(raw[0])); b = int(round(raw[1])); c = 100 - a - b
-    return [(top3[0][0], a), (top3[1][0], b), (top3[2][0], c)]
 mix = top3_percentages(res["top3"])
 mix_text = " · ".join([f"{pct}% {name}" for name, pct in mix])
 
@@ -576,12 +591,14 @@ with left:
 
     st.subheader("🧭 Strategy Profile")
     st.write(f"**Quadrant:** {res['quadrant']}")
-    st.write(f"**Subtype (top two):** {res['strategy_subtype']}")
+    st.write(f"**Subtype:** {res['strategy_subtype']}")
+    st.caption("Strategies (raw means): " + ", ".join(f"{k}={strategy_means[k]:.2f}" for k in STRATEGIES))
     st.caption(f"axis_CF = {res['quadrant_axes']['axis_CF']:.2f} | axis_CR = {res['quadrant_axes']['axis_CR']:.2f}")
 
     st.subheader("🔒 Confidence")
     st.metric("Confidence Index", f"{res['confidence']:.3f}", help="0 (all 1s on SI/SSB) → 1 (all 7s)")
     st.write(f"**Level:** {res['confidence_level']}")
+    st.caption(f"SI mean: {si_mean:.2f} · SSB mean: {ssb_mean:.2f}")
 
     st.subheader("📥 Download Full Scores (CSV)")
     out_df = to_result_df(res, participant_id)
@@ -611,7 +628,10 @@ if HAS_REPORTLAB:
         confidence_level: str,
         probs_series: pd.Series,
         mot_df: pd.DataFrame,
-        ranking_mode_label: str
+        ranking_mode_label: str,
+        si_mean: float,
+        ssb_mean: float,
+        strategy_means: Dict[str, float],
     ) -> bytes:
         buf = BytesIO()
         doc = SimpleDocTemplate(buf, pagesize=LETTER, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
@@ -632,9 +652,10 @@ if HAS_REPORTLAB:
 
         story.append(Paragraph("<b>Strategy Profile</b>", styles["Heading2"]))
         story.append(Paragraph(f"Quadrant: {quadrant_label}", styles["Normal"]))
-        story.append(Paragraph(f"Subtype (top two): {subtype}", styles["Normal"]))
+        story.append(Paragraph(f"Subtype: {subtype}", styles["Normal"]))
+        story.append(Paragraph("Strategies (raw means): " + ", ".join(f"{k}={strategy_means[k]:.2f}" for k in STRATEGIES), styles["Normal"]))
         story.append(Paragraph(f"axis_CF = {axes['axis_CF']:.2f} | axis_CR = {axes['axis_CR']:.2f}", styles["Normal"]))
-        story.append(Paragraph(f"Confidence Index: <b>{confidence:.3f}</b> ({confidence_level})", styles["Normal"]))
+        story.append(Paragraph(f"Confidence Index: <b>{confidence:.3f}</b> ({confidence_level}) — SI={si_mean:.2f}, SSB={ssb_mean:.2f}", styles["Normal"]))
         story.append(Spacer(1, 8))
 
         story.append(Paragraph("<b>Archetype Probabilities</b>", styles["Heading2"]))
@@ -682,11 +703,12 @@ if HAS_REPORTLAB:
         confidence_level=res["confidence_level"],
         probs_series=probs,
         mot_df=mot_df[["rank"] + (["z"] if "z" in mot_df.columns else ["mean"])],
-        ranking_mode_label=("Z-scores" if ranking_mode.startswith("Z") else "Raw means (1–7)")
+        ranking_mode_label=("Z-scores" if ranking_mode.startswith("Z") else "Raw means (1–7)"),
+        si_mean=si_mean,
+        ssb_mean=ssb_mean,
+        strategy_means=strategy_means,
     )
     st.download_button("📄 Download PDF report", data=pdf_bytes,
                        file_name=f"{participant_id}_report.pdf", mime="application/pdf")
 else:
     st.info("📄 PDF export disabled (install `reportlab` to enable). You can still download CSVs above.")
-
-
