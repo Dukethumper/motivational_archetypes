@@ -171,41 +171,53 @@ def quadrant_label_from_pair(a: str, b: str) -> str:
     if "Flow"    in pair and "Risk"    in pair: return "Flow–Risk"
     return "Ambiguous"
 
-def compute_quadrant_subtype(strategy_means: Dict[str, float], tol: float = 0.01) -> Tuple[str, str]:
-    cfm = strategy_means["Conform"]
-    rkm = strategy_means["Risk"]
-    ctl = strategy_means["Control"]
-    flw = strategy_means["Flow"]
+def compute_confidence_from_means(si: float, ssb: float) -> Tuple[float, str]:
+    # Mapping from score to confidence value
+    CENTROID_MAP = {
+        1: 0.00,
+        2: 0.17,
+        3: 0.33,
+        4: 0.50,
+        5: 0.67,
+        6: 0.83,
+        7: 1.00
+    }
 
-    horiz = "Control" if ctl - flw > tol else ("Flow" if flw - ctl > tol else None)
-    vert  = "Conform" if cfm - rkm > tol else ("Risk" if rkm - cfm > tol else None)
+    # Clamp SI and SSB into 1–7 range and round
+    si = max(1, min(7, round(si)))
+    ssb = max(1, min(7, round(ssb)))
 
-    if horiz and vert:
-        sA, vA = horiz, strategy_means[horiz]
-        sB, vB = vert, strategy_means[vert]
-    elif horiz and not vert:
-        sA, vA = horiz, strategy_means[horiz]
-        sB, vB = ("Conform" if cfm >= rkm else "Risk", max(cfm, rkm))
-    elif vert and not horiz:
-        sA, vA = vert, strategy_means[vert]
-        sB, vB = ("Control" if ctl >= flw else "Flow", max(ctl, flw))
-    else:
-        return "Ambiguous", "Balanced (no dominant axes)"
+    c1 = CENTROID_MAP.get(si, 0.0)
+    c2 = CENTROID_MAP.get(ssb, 0.0)
+    C = (c1 + c2) / 2.0
 
-    if vB > vA:
-        sA, sB, vA, vB = sB, sA, vB, vA
-
-    delta = abs(vA - vB)
-    dom = "balanced" if delta < 0.2 else (f"{sA}-leaning" if delta < 0.6 else f"{sA}-dominant")
-    return quadrant_label_from_pair(sA, sB), f"{sA} + {sB} ({dom})"
+    level = "High" if C >= 0.75 else ("Moderate" if C >= 0.4 else "Low")
+    return C, level
 
 
 def compute_confidence_from_means(si: float, ssb: float) -> Tuple[float, str]:
-    avg = (si + ssb) / 2.0
-    C = (avg - 1.0) / 6.0  # 1→0.0, 7→1.0
-    C = max(0.0, min(1.0, C))
+    # Mapping from score to confidence value
+    CENTROID_MAP = {
+        1: 0.00,
+        2: 0.17,
+        3: 0.33,
+        4: 0.50,
+        5: 0.67,
+        6: 0.83,
+        7: 1.00
+    }
+
+    # Clamp SI and SSB into 1–7 range and round
+    si = max(1, min(7, round(si)))
+    ssb = max(1, min(7, round(ssb)))
+
+    c1 = CENTROID_MAP.get(si, 0.0)
+    c2 = CENTROID_MAP.get(ssb, 0.0)
+    C = (c1 + c2) / 2.0
+
     level = "High" if C >= 0.75 else ("Moderate" if C >= 0.4 else "Low")
     return C, level
+
 
 # ====================== Parser & aggregation ======================
 ITEM_KV_RE = re.compile(r"\[(\w+)\s*=\s*(.*?)\]")  # [KEY=VALUE]
